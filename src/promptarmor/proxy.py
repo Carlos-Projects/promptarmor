@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -123,14 +124,34 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Sets security headers on every response."""
+
+    HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Content-Security-Policy": "default-src 'self'",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+    }
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        for key, value in self.HEADERS.items():
+            response.headers[key] = value
+        return response
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding-window rate limiter per IP. Default: 100 req/min."""
+    """Sliding-window rate limiter per IP with async-safe lock. Default: 100 req/min."""
 
     def __init__(self, app: Any, max_requests: int = 100, window_seconds: int = 60) -> None:
         super().__init__(app)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._buckets: dict[str, list[float]] = defaultdict(list)
+        self._lock = asyncio.Lock()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path == "/health":
@@ -138,11 +159,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ip = request.client.host if request.client else "unknown"
         now = time.monotonic()
         cutoff = now - self.window_seconds
-        self._buckets[ip] = [t for t in self._buckets[ip] if t > cutoff]
-        if len(self._buckets[ip]) >= self.max_requests:
-            logger.warning("Rate limit exceeded for %s", ip)
-            return JSONResponse(status_code=429, content={"error": "rate_limited", "message": "Too many requests"})
-        self._buckets[ip].append(now)
+        async with self._lock:
+            self._buckets[ip] = [t for t in self._buckets[ip] if t > cutoff]
+            if len(self._buckets[ip]) >= self.max_requests:
+                logger.warning("Rate limit exceeded for %s", ip)
+                return JSONResponse(status_code=429, content={"error": "rate_limited", "message": "Too many requests"})
+            self._buckets[ip].append(now)
         return await call_next(request)
 
 
@@ -172,6 +194,7 @@ class PromptArmorProxy:
                 Route("/{path:path}", self.handle_catch_all),
             ],
             middleware=[
+                Middleware(SecurityHeadersMiddleware),
                 Middleware(AuthMiddleware),
                 Middleware(RateLimitMiddleware, max_requests=config.rate_limit),
             ],
