@@ -95,8 +95,8 @@ def test(
     from rich.table import Table
 
     if file:
-        if file.exists():
-            prompt = file.read_text()
+        resolved = file.resolve()
+        prompt = resolved.read_text()
     if not prompt:
         typer.echo("Error: either provide a prompt string or --file")
         raise typer.Exit(1)

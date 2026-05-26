@@ -88,9 +88,8 @@ class TestPolicyEngine:
             description="",
             action=PolicyAction.BLOCK,
             conditions={"category": "injection"},
-
-            conditions={"category": "injection"},
-
+        )
+        self.engine.add_rule(rule)
         result = self.engine.evaluate({"category": "injection", "score": 0.0})
         assert result.matched
 

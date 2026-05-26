@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 from mcp_taxonomy import AttackCategory, Confidence, Severity
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -53,6 +55,75 @@ def _max_confidence(*con: Confidence) -> Confidence:
 logger = logging.getLogger("promptarmor.proxy")
 
 
+# -- Security middleware -------------------------------------------------------
+
+ALLOWED_CHAT_FIELDS = {
+    "model",
+    "messages",
+    "max_tokens",
+    "temperature",
+    "stop",
+    "stream",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "n",
+    "user",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "seed",
+}
+ALLOWED_COMPLETION_FIELDS = {
+    "model",
+    "prompt",
+    "max_tokens",
+    "temperature",
+    "stop",
+    "stream",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "n",
+    "user",
+    "suffix",
+    "logprobs",
+    "echo",
+    "seed",
+}
+_MAX_REQUEST_BYTES = 1_048_576  # 1 MB
+
+
+def _sanitize_body(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    """Strip unknown fields from request body to prevent mass assignment."""
+    sanitized = {k: v for k, v in body.items() if k in allowed}
+    if "messages" in sanitized:
+        sanitized["messages"] = [
+            {k: v for k, v in msg.items() if k in {"role", "content", "name", "tool_call_id", "tool_calls"}}
+            for msg in sanitized["messages"]
+        ]
+    return sanitized
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Validates API key on every request (except health)."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        config = request.app.state.config
+        if request.url.path == "/health":
+            return await call_next(request)
+        if config.api_key:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer ") or auth_header.removeprefix("Bearer ") != config.api_key:
+                return JSONResponse(
+                    status_code=401, content={"error": "unauthorized", "message": "Invalid or missing API key"}
+                )
+        return await call_next(request)
+
+
+# -- Proxy server --------------------------------------------------------------
+
+
 class PromptArmorProxy:
     def __init__(self, config: ProxyConfig):
         self.config = config
@@ -74,11 +145,33 @@ class PromptArmorProxy:
                 Route("/v1/completions", self.handle_completion, methods=["POST"]),
                 Route("/health", self.handle_health, methods=["GET"]),
                 Route("/{path:path}", self.handle_catch_all),
-            ]
+            ],
+            middleware=[Middleware(AuthMiddleware)],
         )
+        self.app.state.config = config
+        if config.target_url and not config.api_key:
+            logger.warning(
+                "Proxy configured with target URL but no API key — upstream requests will be unauthenticated"
+            )
+
+    async def _parse_body(self, request: Request) -> dict[str, Any] | None:
+        """Parse JSON body with size limit. Returns None on failure."""
+        content_length = request.headers.get("content-length", "0")
+        if content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
+            return None
+        try:
+            body = await request.json()
+        except ValueError:
+            return None
+        return body
 
     async def handle_chat_completion(self, request: Request) -> Response:
-        body = await request.json()
+        body = await self._parse_body(request)
+        if body is None:
+            return JSONResponse(
+                status_code=400, content={"error": "bad_request", "message": "Invalid or too large request body"}
+            )
+        body = _sanitize_body(body, ALLOWED_CHAT_FIELDS)
         messages = body.get("messages", [])
         user_prompt = self._extract_user_prompt(messages)
 
@@ -137,15 +230,20 @@ class PromptArmorProxy:
                     )
 
             return JSONResponse(response)
-        except httpx.HTTPError as e:
-            logger.error(f"Upstream request failed: {e}")
+        except httpx.HTTPError:
+            logger.warning("Upstream request failed", exc_info=True)
             return JSONResponse(
                 status_code=502,
-                content={"error": "upstream_error", "message": str(e)},
+                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
             )
 
     async def handle_completion(self, request: Request) -> Response:
-        body = await request.json()
+        body = await self._parse_body(request)
+        if body is None:
+            return JSONResponse(
+                status_code=400, content={"error": "bad_request", "message": "Invalid or too large request body"}
+            )
+        body = _sanitize_body(body, ALLOWED_COMPLETION_FIELDS)
         prompt = body.get("prompt", "")
 
         result = self._run_filters(prompt)
@@ -180,10 +278,11 @@ class PromptArmorProxy:
         try:
             response = await self._proxy_request(body)
             return JSONResponse(response)
-        except httpx.HTTPError as e:
+        except httpx.HTTPError:
+            logger.warning("Upstream request failed", exc_info=True)
             return JSONResponse(
                 status_code=502,
-                content={"error": "upstream_error", "message": str(e)},
+                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
             )
 
     async def handle_health(self, request: Request) -> Response:
@@ -192,7 +291,7 @@ class PromptArmorProxy:
     async def handle_catch_all(self, request: Request, path: str = "") -> Response:
         return JSONResponse(
             status_code=404,
-            content={"error": "not_found", "message": f"Unknown endpoint: {request.url.path}"},
+            content={"error": "not_found"},
         )
 
     def _run_filters(self, prompt: str) -> dict[str, Any]:
@@ -251,6 +350,9 @@ class PromptArmorProxy:
         target = self.config.target_url
         if not target:
             return {"choices": [{"message": {"content": "Mock response: proxy not configured"}}]}
+        if not target.startswith(("https://", "http://")):
+            logger.warning("Invalid target URL scheme: %s", target.split("://")[0] if "://" in target else "none")
+            raise httpx.HTTPError("Invalid target URL scheme")
         api_key = self.config.api_key
         headers = {"Content-Type": "application/json"}
         if api_key:

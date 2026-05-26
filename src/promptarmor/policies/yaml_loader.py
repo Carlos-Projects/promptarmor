@@ -11,7 +11,7 @@ class YamlPolicyLoader:
         self.strict = strict
 
     def load(self, path: str) -> list[PolicyRule]:
-        filepath = Path(path)
+        filepath = Path(path).resolve()
         if not filepath.exists():
             raise FileNotFoundError(f"Policy file not found: {path}")
         with open(filepath) as f:
