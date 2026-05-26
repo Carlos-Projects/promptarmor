@@ -12,7 +12,7 @@ build/
 *.sqlite3
 .env
 .DS_Store
-.coverage
-.coverage.*
 htmlcov/
 coverage*
+.coverage
+.coverage.*
