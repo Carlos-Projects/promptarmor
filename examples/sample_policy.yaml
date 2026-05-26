@@ -1,0 +1,43 @@
+version: "1.0"
+namespace: promptarmor
+description: "Sample PromptArmor security policy"
+
+rules:
+  - id: block-critical-injection
+    name: "Block Critical Injection"
+    description: "Block prompts with high injection scores"
+    action: block
+    priority: 100
+    enabled: true
+    conditions:
+      score_min: 0.8
+      category: prompt_injection
+
+  - id: flag-suspicious
+    name: "Flag Suspicious Prompts"
+    description: "Flag prompts with medium injection scores"
+    action: flag
+    priority: 50
+    enabled: true
+    conditions:
+      score_min: 0.5
+      category: prompt_injection
+
+  - id: block-adversarial
+    name: "Block Adversarial Prompts"
+    description: "Block prompts detected by self-reflection guard"
+    action: block
+    priority: 90
+    enabled: true
+    conditions:
+      score_min: 0.7
+      category: adversarial
+
+  - id: allow-safe
+    name: "Allow Safe Traffic"
+    description: "Allow low-risk prompts through"
+    action: allow
+    priority: 0
+    enabled: true
+    conditions:
+      score_min: 0.0
