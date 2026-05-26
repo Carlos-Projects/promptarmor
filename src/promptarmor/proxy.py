@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -121,6 +123,29 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Sliding-window rate limiter per IP. Default: 100 req/min."""
+
+    def __init__(self, app: Any, max_requests: int = 100, window_seconds: int = 60) -> None:
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._buckets: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.url.path == "/health":
+            return await call_next(request)
+        ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        self._buckets[ip] = [t for t in self._buckets[ip] if t > cutoff]
+        if len(self._buckets[ip]) >= self.max_requests:
+            logger.warning("Rate limit exceeded for %s", ip)
+            return JSONResponse(status_code=429, content={"error": "rate_limited", "message": "Too many requests"})
+        self._buckets[ip].append(now)
+        return await call_next(request)
+
+
 # -- Proxy server --------------------------------------------------------------
 
 
@@ -146,7 +171,10 @@ class PromptArmorProxy:
                 Route("/health", self.handle_health, methods=["GET"]),
                 Route("/{path:path}", self.handle_catch_all),
             ],
-            middleware=[Middleware(AuthMiddleware)],
+            middleware=[
+                Middleware(AuthMiddleware),
+                Middleware(RateLimitMiddleware, max_requests=config.rate_limit),
+            ],
         )
         self.app.state.config = config
         if config.target_url and not config.api_key:

@@ -38,6 +38,9 @@ def serve(
     api_key: str = typer.Option("", "--api-key", "-k", help="API key for upstream"),
     policy: str | None = typer.Option(None, "--policy", "-P", help="Policy file path"),
     log_level: str = typer.Option("info", "--log-level", "-L", help="Log level"),
+    ssl_certfile: str | None = typer.Option(None, "--ssl-certfile", help="Path to SSL certificate file"),
+    ssl_keyfile: str | None = typer.Option(None, "--ssl-keyfile", help="Path to SSL key file"),
+    rate_limit: int = typer.Option(100, "--rate-limit", "-R", help="Max requests per minute per IP"),
 ):
     """Start the PromptArmor proxy server."""
     import logging
@@ -59,6 +62,7 @@ def serve(
         target_url=target,
         api_key=api_key,
         log_level=log_level,
+        rate_limit=rate_limit,
     )
 
     if policy:
@@ -71,7 +75,10 @@ def serve(
     else:
         proxy = PromptArmorProxy(config)
 
-    console.print(f"[bold cyan]PromptArmor[/bold cyan] proxy starting on [underline]{host}:{port}[/underline]")
+    protocol = "https" if ssl_certfile else "http"
+    console.print(
+        f"[bold cyan]PromptArmor[/bold cyan] proxy starting on [underline]{protocol}://{host}:{port}[/underline]"
+    )
     if target:
         console.print(f"Upstream target: [yellow]{target}[/yellow]")
 
@@ -80,6 +87,8 @@ def serve(
         host=host,
         port=port,
         log_level=log_level,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
 
 
