@@ -11,7 +11,7 @@ rules:
     enabled: true
     conditions:
       score_min: 0.8
-      category: prompt_injection
+      category: injection
 
   - id: flag-suspicious
     name: "Flag Suspicious Prompts"
@@ -21,7 +21,7 @@ rules:
     enabled: true
     conditions:
       score_min: 0.5
-      category: prompt_injection
+      category: injection
 
   - id: block-adversarial
     name: "Block Adversarial Prompts"

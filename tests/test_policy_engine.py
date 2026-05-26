@@ -87,10 +87,11 @@ class TestPolicyEngine:
             name="Cat",
             description="",
             action=PolicyAction.BLOCK,
-            conditions={"category": "prompt_injection"},
-        )
-        self.engine.add_rule(rule)
-        result = self.engine.evaluate({"category": "prompt_injection", "score": 0.0})
+            conditions={"category": "injection"},
+
+            conditions={"category": "injection"},
+
+        result = self.engine.evaluate({"category": "injection", "score": 0.0})
         assert result.matched
 
     def test_pattern_condition(self):

@@ -16,7 +16,7 @@ rules:
     enabled: true
     conditions:
       score_min: 0.8
-      category: prompt_injection
+      category: injection
 
   - id: rule-2
     name: "Flag Medium"
