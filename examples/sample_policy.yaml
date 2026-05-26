@@ -31,7 +31,7 @@ rules:
     enabled: true
     conditions:
       score_min: 0.7
-      category: adversarial
+      category: jailbreak
 
   - id: allow-safe
     name: "Allow Safe Traffic"
