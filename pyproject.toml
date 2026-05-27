@@ -7,7 +7,7 @@ name = "promptarmor"
 version = "0.1.0"
 description = "Runtime defense toolkit against prompt injection for LLM APIs — intercepts, analyzes, and protects prompts in real-time"
 authors = [
-    { name = "Carlos Rocha", email = "Carlos@AIAgentObservatory.org" },
+    { name = "Carlos-Projects", email = "Carlos@AIAgentObservatory.org" },
 ]
 license = { text = "MIT" }
 readme = "README.md"

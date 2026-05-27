@@ -198,4 +198,4 @@ Full security audit: [SECURITY.md](SECURITY.md)
 
 ## 📄 License
 
-MIT © 2026 Carlos Rocha
+MIT © 2026 Carlos-Projects
