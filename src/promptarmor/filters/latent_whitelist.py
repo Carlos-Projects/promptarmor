@@ -6,6 +6,17 @@ from mcp_taxonomy import AttackCategory, Confidence, Severity
 
 @dataclass
 class WhitelistResult:
+    """Result of a latent-space whitelist check.
+
+    Attributes:
+        accepted: Whether the embedding was accepted as benign.
+        score: Acceptance score (0.0 to 1.0).
+        distance: Mahalanobis distance from the benign distribution.
+        severity: Severity level from mcp-taxonomy.
+        confidence: Confidence level from mcp-taxonomy.
+        category: Attack category (ANOMALY when rejected).
+    """
+
     accepted: bool
     score: float = 0.0
     distance: float = 0.0
@@ -15,6 +26,13 @@ class WhitelistResult:
 
 
 class LatentWhitelist:
+    """Benign latent-space whitelist using Mahalanobis distance.
+
+    Based on the ellipsoid-control approach (arXiv:2605.24552). Fits a
+    multivariate Gaussian to a set of known-benign embeddings and scores
+    new inputs by their Mahalanobis distance from this distribution.
+    """
+
     def __init__(
         self,
         threshold: float = 0.7,
@@ -32,6 +50,7 @@ class LatentWhitelist:
             self.fit(known_benign)
 
     def fit(self, embeddings: list[list[float]]) -> None:
+        """Fit the Gaussian model to a set of known-benign embeddings."""
         if not embeddings:
             return
         data = np.array(embeddings, dtype=np.float64)
@@ -49,6 +68,7 @@ class LatentWhitelist:
             self._cov_inv = np.linalg.pinv(self._cov + np.eye(self._cov.shape[0]) * 1e-6)
 
     def mahalanobis_distance(self, embedding: list[float]) -> float:
+        """Compute the Mahalanobis distance of ``embedding`` from the fitted distribution."""
         if self._mean is None or self._cov_inv is None:
             return 0.0
         x = np.array(embedding, dtype=np.float64)
@@ -60,11 +80,17 @@ class LatentWhitelist:
         return dist
 
     def score(self, embedding: list[float]) -> float:
+        """Return an acceptance score (0.0–1.0) for ``embedding``."""
         dist = self.mahalanobis_distance(embedding)
         acceptance = float(np.exp(-dist / (self.ellipsoid_scale + 1e-8)))
         return min(max(acceptance, 0.0), 1.0)
 
     def check(self, embedding: list[float]) -> WhitelistResult:
+        """Check whether ``embedding`` is accepted by the whitelist.
+
+        Returns a ``WhitelistResult`` with the score, distance, and
+        classification.
+        """
         dist = self.mahalanobis_distance(embedding)
         score = self.score(embedding)
         accepted = score >= self.threshold

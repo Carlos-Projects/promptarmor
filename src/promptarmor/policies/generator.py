@@ -4,10 +4,17 @@ from promptarmor.policies.engine import PolicyAction, PolicyRule
 
 
 class MCPGuardPolicyGenerator:
+    """Generates MCPGuard-compatible policy YAML from PromptArmor rules.
+
+    Converts ``PolicyRule`` objects into the MCPGuard policy format,
+    mapping PromptArmor actions to MCPGuard equivalents.
+    """
+
     def __init__(self, namespace: str = "promptarmor"):
         self.namespace = namespace
 
     def generate(self, rules: list[PolicyRule]) -> dict[str, Any]:
+        """Convert a list of ``PolicyRule`` objects to an MCPGuard policy dict."""
         mcpguard_rules: list[dict[str, Any]] = []
         for rule in rules:
             mcpguard_rule = self._convert_rule(rule)
@@ -25,6 +32,7 @@ class MCPGuardPolicyGenerator:
         }
 
     def _convert_rule(self, rule: PolicyRule) -> dict[str, Any] | None:
+        """Convert a single ``PolicyRule`` to MCPGuard format."""
         action_map = {
             PolicyAction.ALLOW: "allow",
             PolicyAction.BLOCK: "deny",
@@ -63,6 +71,7 @@ class MCPGuardPolicyGenerator:
         return mcpguard_rule
 
     def generate_yaml(self, rules: list[PolicyRule]) -> str:
+        """Generate YAML string from a list of ``PolicyRule`` objects."""
         import yaml
 
         data = self.generate(rules)

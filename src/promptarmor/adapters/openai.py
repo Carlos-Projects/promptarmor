@@ -23,6 +23,12 @@ OPENAI_ALLOWED_PARAMS: set[str] = {
 
 
 class OpenAIAdapter:
+    """Adapter for OpenAI-compatible chat completion APIs.
+
+    Wraps ``httpx.AsyncClient`` with OpenAI-specific headers and
+    validates kwargs against an allow-list to prevent mass assignment.
+    """
+
     def __init__(
         self,
         api_key: str,
@@ -51,6 +57,7 @@ class OpenAIAdapter:
         return self._client
 
     def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Strip kwargs to only allow OpenAI-known parameters."""
         return {k: v for k, v in kwargs.items() if k in OPENAI_ALLOWED_PARAMS}
 
     async def chat_completion(
@@ -59,6 +66,7 @@ class OpenAIAdapter:
         stream: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Send a chat completion request to OpenAI."""
         body: dict[str, Any] = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
@@ -74,6 +82,7 @@ class OpenAIAdapter:
         messages: list[dict[str, str]],
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a chat completion from OpenAI (SSE)."""
         body: dict[str, Any] = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
@@ -87,6 +96,7 @@ class OpenAIAdapter:
                     yield {"data": line[6:]}
 
     async def close(self) -> None:
+        """Close the underlying HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None

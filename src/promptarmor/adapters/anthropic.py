@@ -16,6 +16,12 @@ ANTHROPIC_ALLOWED_PARAMS: set[str] = {
 
 
 class AnthropicAdapter:
+    """Adapter for the Anthropic Messages API.
+
+    Wraps ``httpx.AsyncClient`` with Anthropic-specific headers and
+    validates kwargs against an allow-list to prevent mass assignment.
+    """
+
     def __init__(
         self,
         api_key: str,
@@ -45,6 +51,7 @@ class AnthropicAdapter:
         return self._client
 
     def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Strip kwargs to only allow Anthropic-known parameters."""
         return {k: v for k, v in kwargs.items() if k in ANTHROPIC_ALLOWED_PARAMS}
 
     async def messages(
@@ -54,6 +61,7 @@ class AnthropicAdapter:
         stream: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Send a messages request to the Anthropic API."""
         body: dict[str, Any] = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
@@ -73,6 +81,7 @@ class AnthropicAdapter:
         system: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
+        """Stream messages from the Anthropic API (SSE)."""
         body: dict[str, Any] = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
@@ -89,6 +98,7 @@ class AnthropicAdapter:
                     yield {"data": line[6:]}
 
     async def close(self) -> None:
+        """Close the underlying HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None

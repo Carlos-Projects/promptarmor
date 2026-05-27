@@ -13,6 +13,11 @@ LOCAL_ALLOWED_PARAMS: set[str] = {
 
 
 class LocalLLMAdapter:
+    """Adapter for locally-hosted LLM servers (e.g. Ollama, vLLM, TGI).
+
+    Wraps ``httpx.AsyncClient`` and validates kwargs against an allow-list.
+    """
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8080",
@@ -38,6 +43,7 @@ class LocalLLMAdapter:
         return self._client
 
     def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Strip kwargs to only allow known parameters."""
         return {k: v for k, v in kwargs.items() if k in LOCAL_ALLOWED_PARAMS}
 
     async def generate(
@@ -45,6 +51,7 @@ class LocalLLMAdapter:
         prompt: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Send a text generation request to the local server."""
         body: dict[str, Any] = {
             "prompt": prompt,
             "model": kwargs.get("model", self.model),
@@ -55,6 +62,7 @@ class LocalLLMAdapter:
         return response.json()
 
     async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> dict[str, Any]:
+        """Send a chat completion request to the local server."""
         body: dict[str, Any] = {
             "messages": messages,
             "model": kwargs.get("model", self.model),
@@ -65,6 +73,7 @@ class LocalLLMAdapter:
         return response.json()
 
     async def close(self) -> None:
+        """Close the underlying HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None

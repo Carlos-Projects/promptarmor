@@ -27,6 +27,19 @@ HIDDEN_INSTRUCTION_PATTERNS: list[re.Pattern] = [
 
 @dataclass
 class ValidationResult:
+    """Result of LLM output validation.
+
+    Attributes:
+        valid: Whether the output passed all checks.
+        has_exfiltration: Whether sensitive data exfiltration was detected.
+        has_hidden_instructions: Whether hidden instructions were found.
+        exfiltration_matches: Matched exfiltration pattern strings.
+        hidden_instruction_matches: Matched hidden instruction strings.
+        severity: Severity level from mcp-taxonomy.
+        confidence: Confidence level from mcp-taxonomy.
+        category: Attack category from mcp-taxonomy.
+    """
+
     valid: bool
     has_exfiltration: bool = False
     has_hidden_instructions: bool = False
@@ -38,6 +51,12 @@ class ValidationResult:
 
 
 class OutputValidator:
+    """Validates LLM responses for data exfiltration and hidden instructions.
+
+    Scans output text for leaked secrets (API keys, tokens, credentials) and
+    hidden instructions (CSS-based hiding, injected system prompts).
+    """
+
     def __init__(
         self,
         check_exfiltration: bool = True,
@@ -49,6 +68,11 @@ class OutputValidator:
         self.max_output_length = max_output_length
 
     def validate(self, text: str) -> ValidationResult:
+        """Validate ``text`` for exfiltration and hidden instructions.
+
+        Returns a ``ValidationResult`` indicating whether the text passed
+        all checks, along with any matched patterns.
+        """
         if not text:
             return ValidationResult(valid=True)
 

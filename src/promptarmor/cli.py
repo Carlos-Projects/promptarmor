@@ -1,11 +1,9 @@
-import json
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
 from promptarmor import __version__
-from promptarmor.models import PromptArmorEvent
 
 app = typer.Typer(
     name="promptarmor",
@@ -16,6 +14,7 @@ console = Console()
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
+    """Display the main help banner when no subcommand is given."""
     if ctx.invoked_subcommand is None:
         console.print("[bold cyan]PromptArmor[/bold cyan] v" + __version__)
         console.print("Runtime defense toolkit against prompt injection for LLM APIs")
@@ -181,7 +180,7 @@ def policy(
     path: str = typer.Option("", "--path", "-p", help="Policy file path"),
     output: str = typer.Option("", "--output", "-o", help="Output file for generated policy"),
 ):
-    """Manage security policies."""
+    """Manage security policies: validate, list, or generate MCPGuard-compatible policies."""
     from promptarmor.policies.generator import MCPGuardPolicyGenerator
     from promptarmor.policies.yaml_loader import YamlPolicyLoader
 
@@ -238,7 +237,15 @@ def report(
     input: str = typer.Option("", "--input", "-i", help="Input events file (JSON)"),
     output: str = typer.Option("", "--output", "-o", help="Output report file"),
 ):
-    """Generate reports from PromptArmor events."""
+    """Generate reports from PromptArmor events.
+
+    Reads a JSON events file (produced by the proxy) and outputs a console
+    summary, JSON report, or styled HTML report.
+    """
+    import json
+
+    from promptarmor.models import PromptArmorEvent
+
     if not input:
         console.print("[red]Error: --input <file> is required[/red]")
         raise typer.Exit(1)

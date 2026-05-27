@@ -12,6 +12,15 @@ INJECTION_MARKERS: list[re.Pattern] = [
 
 @dataclass
 class SanitizationResult:
+    """Result of context sanitization.
+
+    Attributes:
+        sanitized: Whether any content was removed or modified.
+        cleaned_text: The sanitized text.
+        removed_blocks: Number of injection blocks removed.
+        removed_markers: List of marker strings that were removed.
+    """
+
     sanitized: bool
     cleaned_text: str
     removed_blocks: int = 0
@@ -19,11 +28,23 @@ class SanitizationResult:
 
 
 class ContextSanitizer:
+    """Removes injected tokens, system markers, and role spoofing from text.
+
+    Strips common LLM-injection markers (``<|im_start|>``, ``<<SYSTEM>>``,
+    ``[INST]``) and role-prefixed lines (``user:``, ``system:``) from
+    conversation history.
+    """
+
     def __init__(self, strip_markers: bool = True, max_history_length: int | None = None):
         self.strip_markers = strip_markers
         self.max_history_length = max_history_length
 
     def sanitize(self, text: str) -> SanitizationResult:
+        """Sanitize ``text`` by removing injection markers and role prefixes.
+
+        Returns a ``SanitizationResult`` with the cleaned text and a count
+        of removed blocks.
+        """
         if not text:
             return SanitizationResult(sanitized=False, cleaned_text=text)
 
@@ -59,6 +80,7 @@ class ContextSanitizer:
 
     @staticmethod
     def _strip_common_markers(text: str) -> str:
+        """Remove lines that start with a role prefix (user:, system:, etc.)."""
         lines = text.split("\n")
         filtered: list[str] = []
         for line in lines:

@@ -35,6 +35,18 @@ REFLECTION_TRIGGERS: list[str] = [
 
 @dataclass
 class ReflectionResult:
+    """Result of a self-reflection analysis.
+
+    Attributes:
+        detected: Whether adversarial triggers were found.
+        reasoning: Human-readable explanation of the analysis.
+        severity: Severity level from mcp-taxonomy.
+        confidence: Confidence level from mcp-taxonomy.
+        category: Attack category (always JAILBREAK when detected).
+        triggers: List of trigger phrases that matched.
+        score: Detection score (0.0 to 1.0).
+    """
+
     detected: bool
     reasoning: str = ""
     severity: Severity = Severity.INFO
@@ -45,11 +57,23 @@ class ReflectionResult:
 
 
 class SelfReflectionGuard:
+    """Detects adversarial prompts through logical self-reflection.
+
+    Based on the Reflect-Guard approach (arXiv:2605.24817). Checks for
+    trigger phrases that indicate an attempt to manipulate model behaviour
+    by overriding instructions or simulating role-play scenarios.
+    """
+
     def __init__(self, threshold: float = 0.1):
         self.threshold = threshold
         self._triggers = REFLECTION_TRIGGERS
 
     def analyze(self, text: str) -> ReflectionResult:
+        """Analyze ``text`` for reflection-based manipulation triggers.
+
+        Returns a ``ReflectionResult`` with the triggers found and a score
+        proportional to the number of hits.
+        """
         if not text:
             return ReflectionResult(detected=False)
 

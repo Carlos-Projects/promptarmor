@@ -10,10 +10,13 @@ from promptarmor.models import PromptArmorEvent
 
 
 class ConsoleReporter:
+    """Reports PromptArmor security events to the terminal using Rich."""
+
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
 
     def report_event(self, event: PromptArmorEvent) -> None:
+        """Print a single ``PromptArmorEvent`` as a styled panel."""
         action_color = "red" if event.action == "block" else "yellow" if event.action == "flag" else "green"
         status = Text(f"[{event.action.upper()}]", style=f"bold {action_color}")
 
@@ -31,6 +34,7 @@ class ConsoleReporter:
         self.console.print(panel)
 
     def report_summary(self, events: list[PromptArmorEvent]) -> None:
+        """Print a summary table of aggregate event statistics."""
         total = len(events)
         blocked = sum(1 for e in events if e.action == "block")
         flagged = sum(1 for e in events if e.action == "flag")
@@ -48,4 +52,5 @@ class ConsoleReporter:
         self.console.print(table)
 
     def report_rule_match(self, rule_id: str, action: str, reason: str) -> None:
+        """Print a single policy rule match."""
         self.console.print(f"[dim]Rule[/dim] [bold]{rule_id}[/bold] → {action}: {reason}")

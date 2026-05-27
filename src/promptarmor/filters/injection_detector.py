@@ -38,6 +38,17 @@ INJECTION_PATTERNS: list[re.Pattern] = [
 
 @dataclass
 class DetectionResult:
+    """Result of a single injection-detection scan.
+
+    Attributes:
+        detected: Whether the prompt tripped at least one pattern above threshold.
+        severity: Severity level from mcp-taxonomy.
+        confidence: Confidence level from mcp-taxonomy.
+        category: Attack category (always INJECTION when detected).
+        matched_patterns: List of pattern strings that matched.
+        score: Detection score (0.0 to 1.0).
+    """
+
     detected: bool
     severity: Severity = Severity.INFO
     confidence: Confidence = Confidence.NONE
@@ -47,6 +58,12 @@ class DetectionResult:
 
 
 class InjectionDetector:
+    """Pattern-based prompt injection detector.
+
+    Scans input text against a curated list of regular expressions known
+    to match prompt injection, jailbreak, and role-play manipulation attempts.
+    """
+
     def __init__(self, threshold: float = 0.5, custom_patterns: list[str] | None = None):
         self.threshold = threshold
         self._patterns = list(INJECTION_PATTERNS)
@@ -55,6 +72,11 @@ class InjectionDetector:
                 self._patterns.append(re.compile(p, re.IGNORECASE))
 
     def detect(self, text: str) -> DetectionResult:
+        """Scan ``text`` for known injection patterns.
+
+        Returns a ``DetectionResult`` with the matched patterns and a score
+        proportional to the number of patterns hit.
+        """
         if not text:
             return DetectionResult(detected=False)
 

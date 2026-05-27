@@ -87,6 +87,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 class HTMLReporter:
+    """Generates styled HTML reports from PromptArmor security events."""
+
     def __init__(self, output_dir: str | None = None, version: str = "0.1.0"):
         self.output_dir = Path(output_dir) if output_dir else None
         self.version = version
@@ -94,6 +96,7 @@ class HTMLReporter:
         self._events: list[dict[str, Any]] = []
 
     def report_event(self, event: PromptArmorEvent) -> None:
+        """Record a ``PromptArmorEvent`` for later HTML export."""
         self._events.append(
             {
                 "request_id": event.request_id,
@@ -113,6 +116,7 @@ class HTMLReporter:
         )
 
     def generate_report(self) -> str:
+        """Render the HTML report from recorded events."""
         blocked = sum(1 for e in self._events if e["action"] == "block")
         flagged = sum(1 for e in self._events if e["action"] == "flag")
         allowed = sum(1 for e in self._events if e["action"] == "allow")
@@ -127,6 +131,10 @@ class HTMLReporter:
         )
 
     def save(self, filename: str | None = None) -> str:
+        """Write the HTML report to disk.
+
+        Returns the path to the saved file.
+        """
         path = filename or f"promptarmor_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)

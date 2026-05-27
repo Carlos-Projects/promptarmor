@@ -53,10 +53,12 @@ _USER_AGENT = "PromptArmor/0.1.0"
 
 
 def _max_severity(*sev: Severity) -> Severity:
+    """Return the highest severity from a sequence."""
     return _REVERSE_SEVERITY[max(_SEVERITY_ORDER[s] for s in sev)]
 
 
 def _max_confidence(*con: Confidence) -> Confidence:
+    """Return the highest confidence from a sequence."""
     return _REVERSE_CONFIDENCE[max(_CONFIDENCE_ORDER[c] for c in con)]
 
 
@@ -99,6 +101,7 @@ _MAX_REQUEST_BYTES = 1_048_576
 
 
 def _sanitize_body(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    """Strip unknown fields from request body to prevent mass assignment."""
     sanitized = {k: v for k, v in body.items() if k in allowed}
     if "messages" in sanitized:
         sanitized["messages"] = [
@@ -108,6 +111,7 @@ def _sanitize_body(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
 
 
 def _validate_response_schema(response: dict[str, Any]) -> bool:
+    """Ensure the upstream response matches an expected schema structure."""
     if "choices" in response and isinstance(response["choices"], list):
         return True
     if "completion" in response or "content" in response:
@@ -115,10 +119,13 @@ def _validate_response_schema(response: dict[str, Any]) -> bool:
     return False
 
 
-# -- Middleware --------------------------------------------------------------
-
-
 class AuthMiddleware(BaseHTTPMiddleware):
+    """Validates Bearer token on every request (except /health).
+
+    Reads the API key from ``app.state.config.api_key``. Requests missing
+    or mismatched tokens receive a 401 response.
+    """
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         config = request.app.state.config
         if request.url.path == "/health":
@@ -134,6 +141,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds security-related HTTP headers to every response."""
+
     HEADERS: dict[str, str] = {
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
@@ -151,6 +160,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Sliding-window rate limiter per IP with an async-safe lock.
+
+    Tracks request timestamps per IP and rejects requests that exceed
+    ``max_requests`` within ``window_seconds``.
+    """
+
     def __init__(self, app: Any, max_requests: int = 100, window_seconds: int = 60) -> None:
         super().__init__(app)
         self.max_requests = max_requests
@@ -177,11 +192,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# -- Proxy server ------------------------------------------------------------
-
-
 @asynccontextmanager
 async def _lifespan(app: Starlette) -> AsyncGenerator[None, None]:
+    """Startup/shutdown lifecycle handler registered with Starlette."""
     proxy: PromptArmorProxy = app.state.proxy
     await proxy.startup()
     yield
@@ -189,6 +202,13 @@ async def _lifespan(app: Starlette) -> AsyncGenerator[None, None]:
 
 
 class PromptArmorProxy:
+    """Core proxy server that interposes between clients and LLM APIs.
+
+    Applies security filters (injection detection, self-reflection,
+    context sanitization, output validation), enforces policies, and
+    optionally forwards sanitized requests to the configured upstream.
+    """
+
     def __init__(self, config: ProxyConfig) -> None:
         self.config = config
         self.injection_detector = InjectionDetector()
@@ -223,9 +243,11 @@ class PromptArmorProxy:
         if config.target_url and not config.api_key:
             logger.warning("Proxy configured with target URL but no API key")
 
-    # -- Body parsing ---------------------------------------------------------
-
     async def _parse_body(self, request: Request) -> dict[str, Any] | None:
+        """Parse the request JSON body, enforcing the 1 MB size limit.
+
+        Returns ``None`` if the body is too large or contains invalid JSON.
+        """
         content_length = request.headers.get("content-length", "0")
         if content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
             return None
@@ -235,9 +257,12 @@ class PromptArmorProxy:
             return None
         return body
 
-    # -- Filter execution (offloaded to thread to avoid blocking event loop) --
-
     def _run_filters_sync(self, prompt: str) -> dict[str, Any]:
+        """Synchronously run all detection filters and the policy engine.
+
+        Offloaded to a thread via ``run_in_executor`` to avoid blocking
+        the async event loop.
+        """
         injection_result = self.injection_detector.detect(prompt)
         reflection_result = self.self_reflection.analyze(prompt)
         sanitization = self.context_sanitizer.sanitize(prompt)
@@ -286,12 +311,12 @@ class PromptArmorProxy:
         return result
 
     async def _run_filters(self, prompt: str) -> dict[str, Any]:
+        """Run all detection filters off the event loop via a thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._run_filters_sync, prompt)
 
-    # -- Upstream proxy -------------------------------------------------------
-
     async def _proxy_request(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Forward a sanitized request body to the upstream LLM API."""
         target = self.config.target_url
         if not target:
             return {"choices": [{"message": {"content": "Mock response: proxy not configured"}}]}
@@ -308,6 +333,7 @@ class PromptArmorProxy:
         return response.json()
 
     async def _proxy_stream(self, body: dict[str, Any]) -> AsyncGenerator[bytes, None]:
+        """Stream an upstream SSE response chunk by chunk."""
         target = self.config.target_url
         if not target:
             yield b'data: {"error": "no target configured"}\n\n'
@@ -324,11 +350,10 @@ class PromptArmorProxy:
             async for chunk in response.aiter_bytes():
                 yield chunk
 
-    # -- Event helpers --------------------------------------------------------
-
     def _build_event(
         self, request: Request, prompt: str, result: dict[str, Any], body: dict[str, Any] | None = None
     ) -> PromptArmorEvent:
+        """Construct a ``PromptArmorEvent`` from the request and filter result."""
         return PromptArmorEvent(
             request_id=str(uuid.uuid4()),
             timestamp=datetime.now(),
@@ -345,12 +370,14 @@ class PromptArmorProxy:
         )
 
     def _extract_user_prompt(self, messages: list[dict[str, str]]) -> str:
+        """Extract the most recent user message content from a messages list."""
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 return msg.get("content", "")
         return messages[-1].get("content", "") if messages else ""
 
     def _update_messages(self, messages: list[dict[str, str]], sanitized: str) -> list[dict[str, str]]:
+        """Replace the last user message content with a sanitized version."""
         updated = list(messages)
         for i in range(len(updated) - 1, -1, -1):
             if updated[i].get("role") == "user":
@@ -358,9 +385,12 @@ class PromptArmorProxy:
                 break
         return updated
 
-    # -- Streaming support ----------------------------------------------------
-
     async def handle_stream_chat(self, request: Request) -> Response:
+        """Handle a streaming chat completions request (SSE).
+
+        Returns a ``StreamingResponse`` that proxies the upstream SSE stream
+        chunk by chunk.
+        """
         body = await self._parse_body(request)
         if body is None:
             return JSONResponse(status_code=400, content={"error": "bad_request", "message": "Invalid body"})
@@ -378,9 +408,13 @@ class PromptArmorProxy:
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
-    # -- Chat completions endpoint --------------------------------------------
-
     async def handle_chat_completion(self, request: Request) -> Response:
+        """Handle a non-streaming chat completions request.
+
+        Parses the body, runs detection filters, records a ``PromptArmorEvent``,
+        optionally sanitizes the prompt, proxies to the upstream, and validates
+        the response before returning it to the client.
+        """
         body = await self._parse_body(request)
         if body is None:
             return JSONResponse(
@@ -443,9 +477,8 @@ class PromptArmorProxy:
                 content={"error": "upstream_error", "message": "Upstream LLM request failed"},
             )
 
-    # -- Legacy completions endpoint ------------------------------------------
-
     async def handle_completion(self, request: Request) -> Response:
+        """Handle a legacy completions endpoint request."""
         body = await self._parse_body(request)
         if body is None:
             return JSONResponse(
@@ -480,24 +513,29 @@ class PromptArmorProxy:
                 content={"error": "upstream_error", "message": "Upstream LLM request failed"},
             )
 
-    # -- Health & catch-all ---------------------------------------------------
-
     async def handle_health(self, request: Request) -> Response:
+        """Health check endpoint — returns service status."""
         return JSONResponse({"status": "ok", "service": "promptarmor"})
 
     async def handle_catch_all(self, request: Request, path: str = "") -> Response:
+        """Catch-all handler for undefined routes — returns 404."""
         return JSONResponse(status_code=404, content={"error": "not_found"})
 
-    # -- Lifecycle ------------------------------------------------------------
-
     async def startup(self) -> None:
+        """Lifecycle hook called when the ASGI server starts."""
         logger.info("PromptArmor proxy starting on %s:%s", self.config.host, self.config.port)
 
     async def shutdown(self) -> None:
+        """Lifecycle hook called when the ASGI server stops.
+
+        Closes the HTTP client to release connections.
+        """
         await self._http_client.aclose()
         logger.info("PromptArmor proxy shut down")
 
 
 def create_proxy(config: ProxyConfig) -> Starlette:
+    """Convenience factory — builds a ``PromptArmorProxy`` and returns its
+    Starlette ASGI app."""
     proxy = PromptArmorProxy(config)
     return proxy.app

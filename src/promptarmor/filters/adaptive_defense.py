@@ -18,6 +18,13 @@ _SEVERITY_WEIGHTS = {
 
 
 class AdaptiveDefense:
+    """Learns from attack patterns and adjusts detection thresholds dynamically.
+
+    Tracks pattern frequency, severity, IP reputation, and per-model attack
+    counts. Provides methods to query pattern risk, get dynamic thresholds,
+    and recommend new policy rules based on emerging patterns.
+    """
+
     def __init__(
         self,
         learning_rate: float = 0.1,
@@ -44,6 +51,11 @@ class AdaptiveDefense:
         source_ip: str = "",
         model: str = "",
     ) -> None:
+        """Record a detection event for adaptive learning.
+
+        Updates pattern frequency, severity history, IP reputation, and
+        per-model attack counters.
+        """
         self._pattern_freq[pattern] += 1
         self._pattern_severity[pattern].append(_SEVERITY_WEIGHTS.get(severity, 3))
         if source_ip:
@@ -54,6 +66,10 @@ class AdaptiveDefense:
         self._maybe_decay()
 
     def get_pattern_risk(self, pattern: str) -> float:
+        """Return the risk score (0.0–1.0) for a given attack pattern.
+
+        Based on frequency, severity, and learning rate.
+        """
         freq = self._pattern_freq.get(pattern, 0)
         if freq == 0:
             return 0.0
@@ -62,12 +78,18 @@ class AdaptiveDefense:
         return min((freq * self.learning_rate) * (avg_severity / 5.0), 1.0)
 
     def get_ip_risk(self, source_ip: str) -> float:
+        """Return the risk score (0.0–1.0) for a given source IP."""
         scores = self._ip_reputation.get(source_ip, [])
         if not scores:
             return 0.0
         return min(sum(scores) * self.learning_rate, 1.0)
 
     def get_dynamic_threshold(self, model: str = "") -> float:
+        """Return a dynamically adjusted detection threshold.
+
+        Raises the threshold when attack volume is high to reduce
+        false positives.
+        """
         base = 0.5
         if model and self._model_attacks.get(model, 0) > 10:
             base += 0.2
@@ -76,6 +98,10 @@ class AdaptiveDefense:
         return min(base, 1.0)
 
     def get_emerging_patterns(self, min_freq: int = 5) -> list[dict[str, Any]]:
+        """Return patterns that have appeared at least ``min_freq`` times.
+
+        Sorted by frequency descending.
+        """
         emerging: list[dict[str, Any]] = []
         for pattern, freq in self._pattern_freq.items():
             if freq >= min_freq:
@@ -91,6 +117,7 @@ class AdaptiveDefense:
         return sorted(emerging, key=lambda x: x["frequency"], reverse=True)
 
     def get_recommended_rules(self) -> list[dict[str, Any]]:
+        """Generate recommended policy rules from high-frequency patterns."""
         rules: list[dict[str, Any]] = []
         for p in self.get_emerging_patterns(min_freq=10):
             if p["risk"] >= self.min_confidence:
@@ -104,6 +131,7 @@ class AdaptiveDefense:
         return rules
 
     def _maybe_decay(self) -> None:
+        """Decay old pattern frequencies to prevent unbounded memory growth."""
         now = datetime.now()
         if now - self._last_decay > self.decay_window:
             for key in list(self._pattern_freq.keys()):
@@ -113,6 +141,7 @@ class AdaptiveDefense:
             self._last_decay = now
 
     def stats(self) -> dict[str, Any]:
+        """Return summary statistics about the adaptive defence state."""
         return {
             "total_events": self._total_events,
             "unique_patterns": len(self._pattern_freq),
@@ -123,6 +152,10 @@ class AdaptiveDefense:
         }
 
     def save_state(self, path: str | None = None) -> str:
+        """Persist the current defence state to a JSON file.
+
+        Returns the path to the saved file.
+        """
         save_path = Path(path) if path else self.state_path
         if not save_path:
             save_path = Path(f"promptarmor_defense_state_{datetime.now().strftime('%Y%m%d')}.json")
@@ -136,6 +169,7 @@ class AdaptiveDefense:
         return str(save_path)
 
     def load_state(self, path: str) -> None:
+        """Restore a previously saved defence state from a JSON file."""
         data = json.loads(Path(path).read_text())
         self._pattern_freq = defaultdict(int, data.get("pattern_freq", {}))
         self._ip_reputation = defaultdict(list, {k: list(v) for k, v in data.get("ip_reputation", {}).items()})
