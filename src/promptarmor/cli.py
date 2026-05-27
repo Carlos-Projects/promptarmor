@@ -13,7 +13,18 @@ console = Console()
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show version and exit",
+    ),
+) -> None:
+    if version:
+        console.print(__version__)
+        raise typer.Exit()
+
     """Display the main help banner when no subcommand is given."""
     if ctx.invoked_subcommand is None:
         console.print("[bold cyan]PromptArmor[/bold cyan] v" + __version__)
