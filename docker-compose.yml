@@ -1,0 +1,18 @@
+services:
+  promptarmor:
+    build: .
+    container_name: promptarmor
+    ports:
+      - "8080:8080"
+    environment:
+      - PROMPTARMOR_HOST=0.0.0.0
+      - PROMPTARMOR_PORT=8080
+      - PROMPTARMOR_LOG_LEVEL=INFO
+      - PROMPTARMOR_API_KEY=${PROMPTARMOR_API_KEY:-change-me}
+      - PROMPTARMOR_TARGET_URL=${PROMPTARMOR_TARGET_URL:-}
+      - PROMPTARMOR_RATE_LIMIT=100
+      - PROMPTARMOR_DETECTION_THRESHOLD=0.5
+      - PROMPTARMOR_ADAPTIVE_LEARNING=true
+    volumes:
+      - ./examples/policy.yaml:/app/policy.yaml:ro
+    restart: unless-stopped

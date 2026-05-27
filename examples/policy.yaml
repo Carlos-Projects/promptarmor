@@ -1,0 +1,27 @@
+name: "promptarmor-policy"
+description: "Example policy for PromptArmor"
+default: "allow"
+rules:
+  - name: "block-injection-attempts"
+    description: "Block known injection patterns"
+    patterns:
+      - "ignore all previous instructions"
+      - "reveal your system prompt"
+      - "DAN"
+      - "jailbreak"
+    action: "block"
+    priority: 80
+  - name: "block-api-key-leaks"
+    description: "Block prompts containing API keys"
+    patterns:
+      - "sk-"
+      - "ghp_"
+    action: "block"
+    priority: 90
+  - name: "log-complex-requests"
+    description: "Log but allow requests with obfuscated content"
+    patterns:
+      - "base64"
+      - "hex encode"
+    action: "log"
+    priority: 30

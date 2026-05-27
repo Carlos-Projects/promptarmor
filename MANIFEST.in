@@ -1,0 +1,6 @@
+include src/promptarmor/**/*.yaml
+include src/promptarmor/**/*.j2
+recursive-include tests *.py
+include CHANGELOG.md
+include LICENSE
+include README.md
