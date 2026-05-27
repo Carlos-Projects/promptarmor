@@ -180,9 +180,8 @@ PromptArmor is part of a broader AI security ecosystem:
 | Code coverage | 84% |
 | Ruff | 0 errors |
 | mypy | 0 errors |
-| Bandit | 0 security findings |
 | Hardcoded secrets | 0 |
-| pre-commit | 3/3 hooks passing |
+| pre-commit | All hooks passing |
 | Critical vulns | 0 remediated |
 | High vulns | 0 remediated |
 | Medium vulns | 0 remediated |
