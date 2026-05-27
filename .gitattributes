@@ -1,0 +1,11 @@
+* text=auto
+*.py text diff=python
+*.md text
+*.yml text
+*.yaml text
+*.toml text
+*.json text
+*.sh text eol=lf
+*.bat text eol=crlf
+Dockerfile text
+Makefile text

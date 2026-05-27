@@ -3,6 +3,24 @@ from typing import Any
 
 import httpx
 
+OPENAI_ALLOWED_PARAMS: set[str] = {
+    "model",
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "n",
+    "stop",
+    "presence_penalty",
+    "frequency_penalty",
+    "logit_bias",
+    "user",
+    "response_format",
+    "seed",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+}
+
 
 class OpenAIAdapter:
     def __init__(
@@ -26,10 +44,14 @@ class OpenAIAdapter:
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
+                    "User-Agent": "PromptArmor/0.1.0",
                 },
                 timeout=self.timeout,
             )
         return self._client
+
+    def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in kwargs.items() if k in OPENAI_ALLOWED_PARAMS}
 
     async def chat_completion(
         self,
@@ -42,7 +64,7 @@ class OpenAIAdapter:
             "messages": messages,
             "stream": stream,
         }
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         response = await self.client.post("/chat/completions", json=body)
         response.raise_for_status()
         return response.json()
@@ -57,7 +79,7 @@ class OpenAIAdapter:
             "messages": messages,
             "stream": True,
         }
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         async with self.client.stream("POST", "/chat/completions", json=body) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

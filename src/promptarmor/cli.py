@@ -1,14 +1,15 @@
+import json
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
 from promptarmor import __version__
+from promptarmor.models import PromptArmorEvent
 
 app = typer.Typer(
     name="promptarmor",
     help="Runtime defense toolkit against prompt injection for LLM APIs",
-    add_completion=False,
 )
 console = Console()
 
@@ -234,18 +235,29 @@ def policy(
 @app.command()
 def report(
     action: str = typer.Argument(..., help="Report action: json, html, summary"),
-    input: str = typer.Option("", "--input", "-i", help="Input events file"),
+    input: str = typer.Option("", "--input", "-i", help="Input events file (JSON)"),
     output: str = typer.Option("", "--output", "-o", help="Output report file"),
 ):
     """Generate reports from PromptArmor events."""
-    if not input and output:
-        console.print("[yellow]No input file specified. Use --input <file>[/yellow]")
-        return
+    if not input:
+        console.print("[red]Error: --input <file> is required[/red]")
+        raise typer.Exit(1)
+
+    input_path = Path(input).resolve()
+    if not input_path.exists():
+        console.print(f"[red]File not found: {input}[/red]")
+        raise typer.Exit(1)
+
+    raw_events = json.loads(input_path.read_text())
+    if isinstance(raw_events, dict):
+        raw_events = [raw_events]
 
     if action == "json":
         from promptarmor.reporters.json import JSONReporter
 
         j_reporter = JSONReporter()
+        for ev in raw_events:
+            j_reporter.report_event(PromptArmorEvent(**ev))
         path = j_reporter.save(output or None)
         console.print(f"[green]JSON report saved: {path}[/green]")
 
@@ -253,11 +265,19 @@ def report(
         from promptarmor.reporters.html import HTMLReporter
 
         h_reporter = HTMLReporter()
+        for ev in raw_events:
+            h_reporter.report_event(PromptArmorEvent(**ev))
         path = h_reporter.save(output or None)
         console.print(f"[green]HTML report saved: {path}[/green]")
 
     elif action == "summary":
-        console.print("[yellow]Summary report requires loaded events[/yellow]")
+        blocked = sum(1 for e in raw_events if e.get("action") == "block" or e.get("filtered"))
+        flagged = sum(1 for e in raw_events if e.get("action") == "flag")
+        allowed = sum(1 for e in raw_events if e.get("action") == "allow" and not e.get("filtered"))
+        console.print(f"[bold]Summary[/bold] — {len(raw_events)} events")
+        console.print(f"  [red]Blocked: {blocked}[/red]")
+        console.print(f"  [yellow]Flagged: {flagged}[/yellow]")
+        console.print(f"  [green]Allowed: {allowed}[/green]")
 
     else:
         console.print(f"[red]Unknown action: {action}. Use: json, html, summary[/red]")

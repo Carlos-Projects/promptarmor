@@ -85,7 +85,7 @@ Changelog = "https://github.com/Carlos-Projects/promptarmor/releases"
 packages = ["src/promptarmor"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/examples", "/CHANGELOG.md", "/CODE_OF_CONDUCT.md", "/CONTRIBUTING.md", "/Dockerfile", "/LICENSE", "/MANIFEST.in", "/README.md", "/SECURITY.md", "/docker-compose.yml"]
+include = ["src", "tests", "examples", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "Dockerfile", "LICENSE", "MANIFEST.in", "README.md", "SECURITY.md", "docker-compose.yml"]
 
 [tool.ruff]
 target-version = "py311"

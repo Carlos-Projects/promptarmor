@@ -17,12 +17,21 @@ pip install -e ".[dev]"
 5. Commit using conventional commits: `git commit -m "type(scope): description"`
 6. Push and open a PR
 
+## Before You Start
+
+Install pre-commit hooks:
+
+```bash
+pre-commit install
+```
+
 ## Quality Gates
 
 Before submitting a PR, ensure:
 
 - `ruff check .` — passes with no errors
-- `python -m pytest tests/ -v` — all tests pass
+- `mypy src/promptarmor/` — passes with no errors
+- `python -m pytest tests/ -v --cov=promptarmor` — all tests pass, coverage ≥80%
 - Tests added for new features or bug fixes
 - Type hints on all public functions
 
@@ -32,7 +41,7 @@ Before submitting a PR, ensure:
 - Ruff enforces imports, naming, and formatting
 - Type hints required for all public functions and methods
 - Use dataclasses for data containers
-- Use Pydantic for configuration models
+- Use `make` for common commands (see [Makefile](Makefile))
 
 ## Project Structure
 

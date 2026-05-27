@@ -3,6 +3,17 @@ from typing import Any
 
 import httpx
 
+ANTHROPIC_ALLOWED_PARAMS: set[str] = {
+    "model",
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "stop_sequences",
+    "metadata",
+    "stream",
+}
+
 
 class AnthropicAdapter:
     def __init__(
@@ -27,10 +38,14 @@ class AnthropicAdapter:
                     "x-api-key": self.api_key,
                     "anthropic-version": "2023-06-01",
                     "Content-Type": "application/json",
+                    "User-Agent": "PromptArmor/0.1.0",
                 },
                 timeout=self.timeout,
             )
         return self._client
+
+    def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in kwargs.items() if k in ANTHROPIC_ALLOWED_PARAMS}
 
     async def messages(
         self,
@@ -47,7 +62,7 @@ class AnthropicAdapter:
         }
         if system:
             body["system"] = system
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         response = await self.client.post("/messages", json=body)
         response.raise_for_status()
         return response.json()
@@ -66,7 +81,7 @@ class AnthropicAdapter:
         }
         if system:
             body["system"] = system
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         async with self.client.stream("POST", "/messages", json=body) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

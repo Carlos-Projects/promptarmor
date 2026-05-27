@@ -40,8 +40,10 @@ class TestCLI:
         result = runner.invoke(app, ["policy", "unknown"])
         assert result.exit_code == 0
 
-    def test_report_unknown_action(self):
-        result = runner.invoke(app, ["report", "unknown"])
+    def test_report_unknown_action(self, tmp_path):
+        f = tmp_path / "events.json"
+        f.write_text("[]")
+        result = runner.invoke(app, ["report", "unknown", "--input", str(f)])
         assert result.exit_code == 0
 
     def test_policy_generate_without_path(self):

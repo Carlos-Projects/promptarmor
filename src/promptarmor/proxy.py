@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -13,8 +16,9 @@ from mcp_taxonomy import AttackCategory, Confidence, Severity
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from promptarmor.filters.adaptive_defense import AdaptiveDefense
@@ -27,24 +31,25 @@ from promptarmor.models import PromptArmorEvent, ProxyConfig
 from promptarmor.policies.engine import PolicyEngine
 from promptarmor.reporters.console import ConsoleReporter
 
-_SEVERITY_ORDER = {
+logger = logging.getLogger("promptarmor.proxy")
+
+_SEVERITY_ORDER: dict[Severity, int] = {
     Severity.CRITICAL: 5,
     Severity.HIGH: 4,
     Severity.MEDIUM: 3,
     Severity.LOW: 2,
     Severity.INFO: 1,
 }
-
-_CONFIDENCE_ORDER = {
+_CONFIDENCE_ORDER: dict[Confidence, int] = {
     Confidence.CERTAIN: 5,
     Confidence.HIGH: 4,
     Confidence.MEDIUM: 3,
     Confidence.LOW: 2,
     Confidence.NONE: 1,
 }
-
 _REVERSE_SEVERITY = {v: k for k, v in _SEVERITY_ORDER.items()}
 _REVERSE_CONFIDENCE = {v: k for k, v in _CONFIDENCE_ORDER.items()}
+_USER_AGENT = "PromptArmor/0.1.0"
 
 
 def _max_severity(*sev: Severity) -> Severity:
@@ -55,12 +60,7 @@ def _max_confidence(*con: Confidence) -> Confidence:
     return _REVERSE_CONFIDENCE[max(_CONFIDENCE_ORDER[c] for c in con)]
 
 
-logger = logging.getLogger("promptarmor.proxy")
-
-
-# -- Security middleware -------------------------------------------------------
-
-ALLOWED_CHAT_FIELDS = {
+ALLOWED_CHAT_FIELDS: set[str] = {
     "model",
     "messages",
     "max_tokens",
@@ -77,7 +77,7 @@ ALLOWED_CHAT_FIELDS = {
     "response_format",
     "seed",
 }
-ALLOWED_COMPLETION_FIELDS = {
+ALLOWED_COMPLETION_FIELDS: set[str] = {
     "model",
     "prompt",
     "max_tokens",
@@ -94,23 +94,31 @@ ALLOWED_COMPLETION_FIELDS = {
     "echo",
     "seed",
 }
-_MAX_REQUEST_BYTES = 1_048_576  # 1 MB
+ALLOWED_MESSAGE_FIELDS: set[str] = {"role", "content", "name", "tool_call_id", "tool_calls"}
+_MAX_REQUEST_BYTES = 1_048_576
 
 
 def _sanitize_body(body: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
-    """Strip unknown fields from request body to prevent mass assignment."""
     sanitized = {k: v for k, v in body.items() if k in allowed}
     if "messages" in sanitized:
         sanitized["messages"] = [
-            {k: v for k, v in msg.items() if k in {"role", "content", "name", "tool_call_id", "tool_calls"}}
-            for msg in sanitized["messages"]
+            {k: v for k, v in msg.items() if k in ALLOWED_MESSAGE_FIELDS} for msg in sanitized["messages"]
         ]
     return sanitized
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    """Validates API key on every request (except health)."""
+def _validate_response_schema(response: dict[str, Any]) -> bool:
+    if "choices" in response and isinstance(response["choices"], list):
+        return True
+    if "completion" in response or "content" in response:
+        return True
+    return False
 
+
+# -- Middleware --------------------------------------------------------------
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         config = request.app.state.config
         if request.url.path == "/health":
@@ -119,15 +127,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer ") or auth_header.removeprefix("Bearer ") != config.api_key:
                 return JSONResponse(
-                    status_code=401, content={"error": "unauthorized", "message": "Invalid or missing API key"}
+                    status_code=401,
+                    content={"error": "unauthorized", "message": "Invalid or missing API key"},
                 )
         return await call_next(request)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Sets security headers on every response."""
-
-    HEADERS = {
+    HEADERS: dict[str, str] = {
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "X-XSS-Protection": "1; mode=block",
@@ -144,8 +151,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding-window rate limiter per IP with async-safe lock. Default: 100 req/min."""
-
     def __init__(self, app: Any, max_requests: int = 100, window_seconds: int = 60) -> None:
         super().__init__(app)
         self.max_requests = max_requests
@@ -160,19 +165,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.monotonic()
         cutoff = now - self.window_seconds
         async with self._lock:
-            self._buckets[ip] = [t for t in self._buckets[ip] if t > cutoff]
-            if len(self._buckets[ip]) >= self.max_requests:
+            window = [t for t in self._buckets[ip] if t > cutoff]
+            self._buckets[ip] = window
+            if len(window) >= self.max_requests:
                 logger.warning("Rate limit exceeded for %s", ip)
-                return JSONResponse(status_code=429, content={"error": "rate_limited", "message": "Too many requests"})
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "rate_limited", "message": "Too many requests"},
+                )
             self._buckets[ip].append(now)
         return await call_next(request)
 
 
-# -- Proxy server --------------------------------------------------------------
+# -- Proxy server ------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _lifespan(app: Starlette) -> AsyncGenerator[None, None]:
+    proxy: PromptArmorProxy = app.state.proxy
+    await proxy.startup()
+    yield
+    await proxy.shutdown()
 
 
 class PromptArmorProxy:
-    def __init__(self, config: ProxyConfig):
+    def __init__(self, config: ProxyConfig) -> None:
         self.config = config
         self.injection_detector = InjectionDetector()
         self.self_reflection = SelfReflectionGuard()
@@ -194,158 +211,33 @@ class PromptArmorProxy:
                 Route("/{path:path}", self.handle_catch_all),
             ],
             middleware=[
+                Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(AuthMiddleware),
                 Middleware(RateLimitMiddleware, max_requests=config.rate_limit),
             ],
+            lifespan=_lifespan,
         )
         self.app.state.config = config
+        self.app.state.proxy = self
         if config.target_url and not config.api_key:
-            logger.warning(
-                "Proxy configured with target URL but no API key — upstream requests will be unauthenticated"
-            )
+            logger.warning("Proxy configured with target URL but no API key")
+
+    # -- Body parsing ---------------------------------------------------------
 
     async def _parse_body(self, request: Request) -> dict[str, Any] | None:
-        """Parse JSON body with size limit. Returns None on failure."""
         content_length = request.headers.get("content-length", "0")
         if content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
             return None
         try:
             body = await request.json()
-        except ValueError:
+        except (ValueError, json.JSONDecodeError):
             return None
         return body
 
-    async def handle_chat_completion(self, request: Request) -> Response:
-        body = await self._parse_body(request)
-        if body is None:
-            return JSONResponse(
-                status_code=400, content={"error": "bad_request", "message": "Invalid or too large request body"}
-            )
-        body = _sanitize_body(body, ALLOWED_CHAT_FIELDS)
-        messages = body.get("messages", [])
-        user_prompt = self._extract_user_prompt(messages)
+    # -- Filter execution (offloaded to thread to avoid blocking event loop) --
 
-        result = self._run_filters(user_prompt)
-
-        event = PromptArmorEvent(
-            request_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
-            source=request.client.host if request.client else "unknown",
-            prompt=user_prompt,
-            filtered=not result["allowed"],
-            action=result["action"],
-            category=result["category"],
-            severity=result["severity"],
-            confidence=result["confidence"],
-            score=result["score"],
-            matched_rules=result.get("matched_rules", []),
-            metadata={"model": body.get("model", "")},
-        )
-
-        self._events.append(event)
-        self.reporter.report_event(event)
-
-        if result["action"] == "block":
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "blocked",
-                    "message": "Prompt blocked by PromptArmor",
-                    "request_id": event.request_id,
-                    "reason": result.get("reason", "security policy violation"),
-                },
-            )
-
-        sanitized_prompt = result.get("sanitized_prompt", user_prompt)
-        if sanitized_prompt != user_prompt:
-            body["messages"] = self._update_messages(messages, sanitized_prompt)
-
-        try:
-            response = await self._proxy_request(body)
-            response_text = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
-
-            validation = self.output_validator.validate(response_text)
-
-            if not validation.valid:
-                event.response = response_text
-                if result["action"] != "flag":
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "error": "blocked",
-                            "message": "LLM response blocked by PromptArmor",
-                            "request_id": event.request_id,
-                            "reason": "output validation failed",
-                        },
-                    )
-
-            return JSONResponse(response)
-        except httpx.HTTPError:
-            logger.warning("Upstream request failed", exc_info=True)
-            return JSONResponse(
-                status_code=502,
-                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
-            )
-
-    async def handle_completion(self, request: Request) -> Response:
-        body = await self._parse_body(request)
-        if body is None:
-            return JSONResponse(
-                status_code=400, content={"error": "bad_request", "message": "Invalid or too large request body"}
-            )
-        body = _sanitize_body(body, ALLOWED_COMPLETION_FIELDS)
-        prompt = body.get("prompt", "")
-
-        result = self._run_filters(prompt)
-
-        event = PromptArmorEvent(
-            request_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
-            source=request.client.host if request.client else "unknown",
-            prompt=prompt,
-            filtered=not result["allowed"],
-            action=result["action"],
-            category=result["category"],
-            severity=result["severity"],
-            confidence=result["confidence"],
-            score=result["score"],
-            matched_rules=result.get("matched_rules", []),
-        )
-
-        self._events.append(event)
-        self.reporter.report_event(event)
-
-        if result["action"] == "block":
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "blocked",
-                    "message": "Prompt blocked by PromptArmor",
-                    "request_id": event.request_id,
-                },
-            )
-
-        try:
-            response = await self._proxy_request(body)
-            return JSONResponse(response)
-        except httpx.HTTPError:
-            logger.warning("Upstream request failed", exc_info=True)
-            return JSONResponse(
-                status_code=502,
-                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
-            )
-
-    async def handle_health(self, request: Request) -> Response:
-        return JSONResponse({"status": "ok", "service": "promptarmor"})
-
-    async def handle_catch_all(self, request: Request, path: str = "") -> Response:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "not_found"},
-        )
-
-    def _run_filters(self, prompt: str) -> dict[str, Any]:
+    def _run_filters_sync(self, prompt: str) -> dict[str, Any]:
         injection_result = self.injection_detector.detect(prompt)
         reflection_result = self.self_reflection.analyze(prompt)
         sanitization = self.context_sanitizer.sanitize(prompt)
@@ -384,11 +276,7 @@ class PromptArmorProxy:
         for trigger in reflection_result.triggers:
             self.adaptive_defense.record_event(trigger, reflection_result.severity)
 
-        policy_context = {
-            "score": max_score,
-            "category": category_enum.value,
-            "source": "proxy",
-        }
+        policy_context = {"score": max_score, "category": category_enum.value, "source": "proxy"}
         policy_result = self.policy_engine.evaluate(policy_context)
         if policy_result.matched and policy_result.action.value != "allow":
             result["action"] = policy_result.action.value
@@ -397,20 +285,64 @@ class PromptArmorProxy:
 
         return result
 
+    async def _run_filters(self, prompt: str) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._run_filters_sync, prompt)
+
+    # -- Upstream proxy -------------------------------------------------------
+
     async def _proxy_request(self, body: dict[str, Any]) -> dict[str, Any]:
         target = self.config.target_url
         if not target:
             return {"choices": [{"message": {"content": "Mock response: proxy not configured"}}]}
         if not target.startswith(("https://", "http://")):
-            logger.warning("Invalid target URL scheme: %s", target.split("://")[0] if "://" in target else "none")
             raise httpx.HTTPError("Invalid target URL scheme")
-        api_key = self.config.api_key
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+        }
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         response = await self._http_client.post(target, json=body, headers=headers)
         response.raise_for_status()
         return response.json()
+
+    async def _proxy_stream(self, body: dict[str, Any]) -> AsyncGenerator[bytes, None]:
+        target = self.config.target_url
+        if not target:
+            yield b'data: {"error": "no target configured"}\n\n'
+            return
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+        }
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        body["stream"] = True
+        async with self._http_client.stream("POST", target, json=body, headers=headers) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                yield chunk
+
+    # -- Event helpers --------------------------------------------------------
+
+    def _build_event(
+        self, request: Request, prompt: str, result: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> PromptArmorEvent:
+        return PromptArmorEvent(
+            request_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            source=request.client.host if request.client else "unknown",
+            prompt=prompt,
+            filtered=not result["allowed"],
+            action=result["action"],
+            category=result["category"],
+            severity=result["severity"],
+            confidence=result["confidence"],
+            score=result["score"],
+            matched_rules=result.get("matched_rules", []),
+            metadata={"model": body.get("model", "")} if body else {},
+        )
 
     def _extract_user_prompt(self, messages: list[dict[str, str]]) -> str:
         for msg in reversed(messages):
@@ -426,8 +358,140 @@ class PromptArmorProxy:
                 break
         return updated
 
+    # -- Streaming support ----------------------------------------------------
+
+    async def handle_stream_chat(self, request: Request) -> Response:
+        body = await self._parse_body(request)
+        if body is None:
+            return JSONResponse(status_code=400, content={"error": "bad_request", "message": "Invalid body"})
+        if not body.get("stream"):
+            return await self.handle_chat_completion(request)
+        body = _sanitize_body(body, ALLOWED_CHAT_FIELDS)
+        messages = body.get("messages", [])
+        user_prompt = self._extract_user_prompt(messages)
+        result = await self._run_filters(user_prompt)
+        if result["action"] == "block":
+            return JSONResponse(status_code=403, content={"error": "blocked"})
+        return StreamingResponse(
+            self._proxy_stream(body),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    # -- Chat completions endpoint --------------------------------------------
+
+    async def handle_chat_completion(self, request: Request) -> Response:
+        body = await self._parse_body(request)
+        if body is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_request", "message": "Invalid or too large request body"},
+            )
+        if body.get("stream"):
+            return await self.handle_stream_chat(request)
+        body = _sanitize_body(body, ALLOWED_CHAT_FIELDS)
+        messages = body.get("messages", [])
+        user_prompt = self._extract_user_prompt(messages)
+
+        result = await self._run_filters(user_prompt)
+        event = self._build_event(request, user_prompt, result, body)
+        self._events.append(event)
+        self.reporter.report_event(event)
+
+        if result["action"] == "block":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "blocked",
+                    "message": "Prompt blocked by PromptArmor",
+                    "request_id": event.request_id,
+                    "reason": result.get("reason", "security policy violation"),
+                },
+            )
+
+        sanitized_prompt = result.get("sanitized_prompt", user_prompt)
+        if sanitized_prompt != user_prompt:
+            body["messages"] = self._update_messages(messages, sanitized_prompt)
+
+        try:
+            response = await self._proxy_request(body)
+            if not _validate_response_schema(response):
+                logger.warning("Upstream response has unexpected schema")
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": "bad_upstream", "message": "Unexpected response format from upstream"},
+                )
+            response_text = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+            validation = self.output_validator.validate(response_text)
+            if not validation.valid:
+                event.response = response_text
+                if result["action"] != "flag":
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "blocked",
+                            "message": "LLM response blocked by PromptArmor",
+                            "request_id": event.request_id,
+                            "reason": "output validation failed",
+                        },
+                    )
+            return JSONResponse(response)
+        except httpx.HTTPError:
+            logger.warning("Upstream request failed", exc_info=True)
+            return JSONResponse(
+                status_code=502,
+                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
+            )
+
+    # -- Legacy completions endpoint ------------------------------------------
+
+    async def handle_completion(self, request: Request) -> Response:
+        body = await self._parse_body(request)
+        if body is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_request", "message": "Invalid or too large request body"},
+            )
+        body = _sanitize_body(body, ALLOWED_COMPLETION_FIELDS)
+        prompt = body.get("prompt", "")
+
+        result = await self._run_filters(prompt)
+        event = self._build_event(request, prompt, result)
+        self._events.append(event)
+        self.reporter.report_event(event)
+
+        if result["action"] == "block":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "blocked",
+                    "message": "Prompt blocked by PromptArmor",
+                    "request_id": event.request_id,
+                },
+            )
+
+        try:
+            response = await self._proxy_request(body)
+            return JSONResponse(response)
+        except httpx.HTTPError:
+            logger.warning("Upstream request failed", exc_info=True)
+            return JSONResponse(
+                status_code=502,
+                content={"error": "upstream_error", "message": "Upstream LLM request failed"},
+            )
+
+    # -- Health & catch-all ---------------------------------------------------
+
+    async def handle_health(self, request: Request) -> Response:
+        return JSONResponse({"status": "ok", "service": "promptarmor"})
+
+    async def handle_catch_all(self, request: Request, path: str = "") -> Response:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    # -- Lifecycle ------------------------------------------------------------
+
     async def startup(self) -> None:
-        logger.info(f"PromptArmor proxy starting on {self.config.host}:{self.config.port}")
+        logger.info("PromptArmor proxy starting on %s:%s", self.config.host, self.config.port)
 
     async def shutdown(self) -> None:
         await self._http_client.aclose()

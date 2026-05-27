@@ -2,6 +2,15 @@ from typing import Any
 
 import httpx
 
+LOCAL_ALLOWED_PARAMS: set[str] = {
+    "model",
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "stop",
+    "stream",
+}
+
 
 class LocalLLMAdapter:
     def __init__(
@@ -20,10 +29,16 @@ class LocalLLMAdapter:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "PromptArmor/0.1.0",
+                },
                 timeout=self.timeout,
             )
         return self._client
+
+    def _filter_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in kwargs.items() if k in LOCAL_ALLOWED_PARAMS}
 
     async def generate(
         self,
@@ -34,7 +49,7 @@ class LocalLLMAdapter:
             "prompt": prompt,
             "model": kwargs.get("model", self.model),
         }
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         response = await self.client.post("/generate", json=body)
         response.raise_for_status()
         return response.json()
@@ -44,7 +59,7 @@ class LocalLLMAdapter:
             "messages": messages,
             "model": kwargs.get("model", self.model),
         }
-        body.update(kwargs)
+        body.update(self._filter_kwargs(kwargs))
         response = await self.client.post("/v1/chat/completions", json=body)
         response.raise_for_status()
         return response.json()
